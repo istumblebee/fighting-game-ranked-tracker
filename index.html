@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SF6 Ranked Lab</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🥊</text></svg>">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <span class="brand-icon">🥊</span>
+      <span class="brand-name">SF6 Ranked Lab</span>
+    </div>
+    <div class="topbar-right">
+      <select id="profileSel" class="profile-sel" title="Your character — each has its own rank"></select>
+      <div id="lpPill" class="lp-pill" title="Current LP and rank"></div>
+      <button id="themeBtn" class="icon-btn" title="Toggle light / dark">◐</button>
+    </div>
+  </div>
+  <nav class="tabs" id="tabs">
+    <button data-tab="log" class="tab sel">Log match</button>
+    <button data-tab="dash">Dashboard</button>
+    <button data-tab="matches">Matches</button>
+    <button data-tab="defense">Defense lab</button>
+    <button data-tab="hits">Hit lab</button>
+    <button data-tab="data">Data</button>
+  </nav>
+</header>
+
+<main id="main">
+  <div id="seedBanner" class="banner" hidden>
+    <div>
+      <strong>Fresh start.</strong> You can load your original spreadsheet history
+      — Zangief's 164 matches, 61 defense reps, and 30 hit entries, with per-round
+      wins/losses recovered from the sheet's green/red cells — and keep going from match 165.
+    </div>
+    <div class="banner-actions">
+      <button id="seedLoadBtn" class="btn primary">Load spreadsheet history</button>
+      <button id="seedDismissBtn" class="btn">Start empty</button>
+    </div>
+  </div>
+
+  <section id="tab-log" class="tabpane"></section>
+  <section id="tab-dash" class="tabpane" hidden></section>
+  <section id="tab-matches" class="tabpane" hidden></section>
+  <section id="tab-defense" class="tabpane" hidden></section>
+  <section id="tab-hits" class="tabpane" hidden></section>
+  <section id="tab-data" class="tabpane" hidden></section>
+</main>
+
+<div id="tooltip" class="tooltip" hidden></div>
+
+<script src="seed.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

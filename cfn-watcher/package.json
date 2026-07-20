@@ -1,0 +1,12 @@
+{
+  "name": "sf6lab-cfn-watcher",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pulls your own SF6 ranked match history from Buckler's Boot Camp into cfn-sync.json for SF6 Ranked Lab.",
+  "scripts": {
+    "start": "node watch.js --serve"
+  },
+  "dependencies": {
+    "playwright": "^1.49.0"
+  }
+}

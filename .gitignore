@@ -1,0 +1,3 @@
+node_modules/
+cfn-watcher/cfn-sync.json
+cfn-watcher/cfn-raw-sample.json
