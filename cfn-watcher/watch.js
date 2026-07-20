@@ -162,18 +162,34 @@ async function waitForShortId(page) {
   state.shortId = sid;
   const logUrl = `${BUCKLER}/en/profile/${sid}/battlelog/rank`;
 
+  async function readLogPage(pageNo) {
+    await page.goto(pageNo > 1 ? `${logUrl}?page=${pageNo}` : logUrl, { waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(2000);
+    const pageProps = await page.evaluate(() =>
+      (window.__NEXT_DATA__ && window.__NEXT_DATA__.props && window.__NEXT_DATA__.props.pageProps) || null);
+    return { list: deepFindReplayList(pageProps), pageProps };
+  }
+
+  // Buckler shows 10 matches per page and keeps ~100: sweep every page on the
+  // first pass (and with --once); later polls only need page 1 for new matches.
+  let fullSweep = true;
   for (;;) {
     try {
-      await page.goto(logUrl, { waitUntil: 'domcontentloaded' });
-      await page.waitForTimeout(2500);
-      const pageProps = await page.evaluate(() =>
-        (window.__NEXT_DATA__ && window.__NEXT_DATA__.props && window.__NEXT_DATA__.props.pageProps) || null);
-      const list = deepFindReplayList(pageProps);
-      if (!list) {
-        console.warn('could not find the battle log in the page data — dumping snapshot to cfn-raw-sample.json');
-        fs.writeFileSync(RAW_SAMPLE, JSON.stringify(pageProps, null, 1));
-      } else {
-        let added = 0;
+      let added = 0;
+      let firstIdOfPage1 = null;
+      const maxPages = fullSweep ? 12 : 1;
+      for (let p = 1; p <= maxPages; p++) {
+        const { list, pageProps } = await readLogPage(p);
+        if (!list || !list.length) {
+          if (p === 1) {
+            console.warn('could not find the battle log in the page data — dumping snapshot to cfn-raw-sample.json');
+            fs.writeFileSync(RAW_SAMPLE, JSON.stringify(pageProps, null, 1));
+          }
+          break; // past the last page
+        }
+        const firstId = String(pick(list[0], 'replay_id', 'replayId'));
+        if (p === 1) firstIdOfPage1 = firstId;
+        else if (firstId === firstIdOfPage1) break; // site ignored ?page= — stop rather than re-reading page 1
         for (const entry of list) {
           let parsed;
           try { parsed = parseEntry(entry, sid); } catch (e) {
@@ -187,15 +203,17 @@ async function waitForShortId(page) {
           added++;
           console.log(`+ ${parsed.result} ${parsed.myChar} vs ${parsed.oppChar} (${parsed.rounds.join(' ')})`);
         }
-        if (added) {
-          state.matches.sort((a, b) => (a.playedAt || 0) - (b.playedAt || 0));
-          state.generatedAt = Date.now();
-          fs.writeFileSync(OUT, JSON.stringify(state, null, 1));
-          console.log(`wrote ${added} new match(es) → ${OUT} (${state.matches.length} total)`);
-        } else {
-          console.log(`no new matches (${new Date().toLocaleTimeString()})`);
-        }
+        if (fullSweep) console.log(`  …page ${p} read (${list.length} entries)`);
       }
+      if (added) {
+        state.matches.sort((a, b) => (a.playedAt || 0) - (b.playedAt || 0));
+        state.generatedAt = Date.now();
+        fs.writeFileSync(OUT, JSON.stringify(state, null, 1));
+        console.log(`wrote ${added} new match(es) → ${OUT} (${state.matches.length} total)`);
+      } else {
+        console.log(`no new matches (${new Date().toLocaleTimeString()})`);
+      }
+      fullSweep = false;
     } catch (e) {
       console.warn('poll failed:', e.message);
     }
