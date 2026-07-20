@@ -38,9 +38,10 @@ const POLL_MS = 60_000;
 const PORT = 8787;
 const BUCKLER = 'https://www.streetfighter.com/6/buckler';
 
-// Round-result code → finish label shown in the app (V/P/OD/SA/CA/C).
-// BEST EFFORT: verify against your first synced session and fix here if needed.
-const CODE_FINISH = { 1: 'V', 2: 'P', 3: 'SA', 4: 'OD', 5: 'CA', 6: 'C' };
+// Round-result code → finish label (V/P/OD/SA/CA/C). Codes observed in real
+// battle logs: 1, 2, 5, 6, 7, 8. Best-effort mapping — the app re-derives
+// finishes from the raw codes on import, so fixes there apply retroactively.
+const CODE_FINISH = { 1: 'V', 2: 'P', 5: 'CA', 6: 'SA', 7: 'C', 8: 'OD' };
 
 // tolerate snake_case / camelCase across site updates
 const pick = (obj, ...names) => {

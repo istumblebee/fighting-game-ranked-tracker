@@ -236,7 +236,7 @@ function sessionsOf(ms) {
     };
   });
 }
-const deltaMismatch = m => !m.placement && ((m.result === 'W' && m.delta < 0) || (m.result === 'L' && m.delta > 0));
+const deltaMismatch = m => !m.placement && !m.pendingDelta && ((m.result === 'W' && m.delta < 0) || (m.result === 'L' && m.delta > 0));
 
 /* ---------- tooltip ---------- */
 const ttEl = document.getElementById('tooltip');
@@ -773,7 +773,7 @@ function recentCard() {
         h('span', { class: 'who' }, `#${m.num} vs ${m.oppChar}${setTxt}`),
         m.note ? h('span', { class: 'note-cell' }, m.note) : null,
         h('span', { class: 'lp' }, m.placement ? 'placement' :
-          `${fmt(lpAfter(m))}${trackOf(m) === 'mr' ? ' MR' : ''} (${m.delta >= 0 ? '+' : ''}${m.delta})`),
+          `${fmt(lpAfter(m))}${trackOf(m) === 'mr' ? ' MR' : ''} (${m.pendingDelta ? '…' : (m.delta >= 0 ? '+' : '') + m.delta})`),
         armedRowBtn('Delete', () => {
           P.matches = P.matches.filter(x => x.id !== m.id); saveDB(); renderAll();
         }));
@@ -988,6 +988,7 @@ function renderMatches() {
           h('td', {}, h('span', { class: `badge ${m.result}` }, m.result)),
           h('td', { class: 'num' }, m.placement ? '—' : fmt(lpAfter(m)) + (trackOf(m) === 'mr' ? ' MR' : '')),
           m.placement ? h('td', { class: 'num' }, '—')
+            : m.pendingDelta ? h('td', { class: 'num', title: 'CFN lists the rating going into each match — this delta appears once the next match is synced' }, '…')
             : h('td', { class: 'num ' + (m.delta >= 0 ? 'delta-up' : 'delta-down'),
               title: deltaMismatch(m) ? 'LP change disagrees with the recorded result — check this row' : null },
               `${m.delta >= 0 ? '+' : ''}${m.delta}${deltaMismatch(m) ? ' ⚠' : ''}`),
@@ -1286,44 +1287,106 @@ const charKey = s => String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
 const CHAR_BY_KEY = new Map(ROSTER.map(c => [charKey(c), c]));
 const normChar = s => CHAR_BY_KEY.get(charKey(s)) || String(s);
 
+// Buckler's battle log lists each player's rating GOING INTO the match
+// (verified against real data by chaining consecutive entries), so a match's
+// delta = the next same-track match's before-value minus its own. The newest
+// match's delta stays pending until the next sync reveals it.
+// Round-result codes observed in real data: 0 = lost round; winners carry the
+// finish type. Best-effort mapping, re-derived from raw codes on every import
+// so a corrected table here fixes history retroactively.
+const CFN_FINISH = { 1: 'V', 2: 'P', 5: 'CA', 6: 'SA', 7: 'C', 8: 'OD' };
+function cfnRounds(myRaw, opRaw) {
+  const n = Math.max(myRaw ? myRaw.length : 0, opRaw ? opRaw.length : 0);
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const my = (myRaw && +myRaw[i]) || 0, op = (opRaw && +opRaw[i]) || 0;
+    if (my > 0) out.push('+' + (CFN_FINISH[my] || 'V'));
+    else if (op > 0) out.push('-' + (CFN_FINISH[op] || 'V'));
+  }
+  return out;
+}
+
+// Re-derive deltas for CFN-sourced matches; also converts records imported by
+// the old after-value logic (lpAfter of old record = true before-value).
+function repairCFNChains(prof) {
+  let changed = false;
+  const ms = prof.matches;
+  for (const m of ms) {
+    if (m.cfnId && !m.cfnBefore && !m.placement) {
+      m.lpBefore = m.lpBefore + m.delta;
+      m.delta = 0;
+      m.cfnBefore = true; m.pendingDelta = true;
+      m.note = (m.note || '').replace(/\s*·?\s*CFN sync anchor[^·]*/, '').trim();
+      changed = true;
+    }
+  }
+  for (let i = 0; i < ms.length; i++) {
+    const m = ms[i];
+    if (!m.cfnBefore || m.placement) continue;
+    let next = null;
+    for (let j = i + 1; j < ms.length; j++) {
+      const c = ms[j];
+      if (!c.placement && trackOf(c) === trackOf(m)) { next = c; break; }
+    }
+    if (next && next.lpBefore != null) {
+      const d = next.lpBefore - m.lpBefore;
+      if (m.delta !== d || m.pendingDelta) { m.delta = d; m.pendingDelta = false; changed = true; }
+    } else if (!next && !m.pendingDelta) {
+      m.pendingDelta = true; changed = true;
+    }
+  }
+  return changed;
+}
+
 function mergeCFN(payload) {
   if (!payload || !Array.isArray(payload.matches)) throw new Error('not a cfn-sync file');
   const list = payload.matches.slice().sort((a, b) => (a.playedAt || 0) - (b.playedAt || 0));
-  let added = 0, skipped = 0;
+  let added = 0, updated = 0, skipped = 0;
   const touched = new Set();
   for (const cm of list) {
     const profName = cm.myChar ? normChar(cm.myChar) : db.active;
     if (!db.profiles[profName]) db.profiles[profName] = emptyProfile();
     const prof = db.profiles[profName];
     const cfnId = cm.cfnId != null ? String(cm.cfnId) : null;
-    if (cfnId && prof.matches.some(m => m.cfnId === cfnId)) { skipped++; continue; }
+    const rounds = (cm.myRoundsRaw || cm.oppRoundsRaw)
+      ? cfnRounds(cm.myRoundsRaw, cm.oppRoundsRaw)
+      : (Array.isArray(cm.rounds) ? cm.rounds.map(String) : []);
+
+    const existing = cfnId && prof.matches.find(m => m.cfnId === cfnId);
+    if (existing) { // re-import refreshes finishes so mapping fixes apply retroactively
+      if (existing.rounds.join(',') !== rounds.join(',') || (cm.myRoundsRaw && !existing.roundsRaw)) {
+        existing.rounds = rounds;
+        if (cm.myRoundsRaw) existing.roundsRaw = { my: cm.myRoundsRaw, opp: cm.oppRoundsRaw };
+        updated++;
+      } else skipped++;
+      touched.add(profName);
+      continue;
+    }
 
     const track = cm.myMR > 0 ? 'mr' : 'lp';
     const val = track === 'mr' ? cm.myMR : cm.myLP;
     const placement = track === 'lp' && (val == null || val < 0); // CFN reports no/negative LP during placements
-    let lpBefore = null, delta = null, anchor = false;
-    if (!placement) {
-      const prev = [...prof.matches].reverse().find(m => !m.placement && trackOf(m) === track);
-      if (prev) { lpBefore = lpAfter(prev); delta = val - lpBefore; }
-      else { lpBefore = val; delta = 0; anchor = true; }
-    }
     prof.matches.push({
-      id: 'cfn-' + (cfnId || uid()), cfnId,
+      id: 'cfn-' + (cfnId || uid()), cfnId, cfnBefore: !placement, pendingDelta: !placement,
       num: prof.matches.reduce((a, m) => Math.max(a, m.num), 0) + 1,
       date: cm.playedAt ? new Date(cm.playedAt * 1000).toISOString().slice(0, 10) : todayISO(),
       playedAt: cm.playedAt ?? null,
-      result: cm.result === 'W' ? 'W' : 'L', placement, track, lpBefore, delta,
-      rounds: Array.isArray(cm.rounds) ? cm.rounds.map(String) : [],
+      result: cm.result === 'W' ? 'W' : 'L', placement, track,
+      lpBefore: placement ? null : val, delta: placement ? null : 0,
+      rounds, roundsRaw: cm.myRoundsRaw ? { my: cm.myRoundsRaw, opp: cm.oppRoundsRaw } : null,
       oppLP: (track === 'mr' ? cm.oppMR : cm.oppLP) ?? null, newChallenger: false,
       oppChar: cm.oppChar ? normChar(cm.oppChar) : '?',
-      note: [cm.oppControl === 'M' ? 'Modern Controls' : '',
-        anchor ? 'CFN sync anchor — deltas start from the next match' : ''].filter(Boolean).join(' · '),
+      note: cm.oppControl === 'M' ? 'Modern Controls' : '',
     });
     touched.add(profName);
     added++;
   }
-  if (added) saveDB();
-  return { added, skipped, profiles: [...touched] };
+  let repaired = false;
+  for (const [name, prof] of Object.entries(db.profiles))
+    if (touched.has(name) || prof.matches.some(m => m.cfnId))
+      if (repairCFNChains(prof)) repaired = true;
+  if (added || updated || repaired) saveDB();
+  return { added, updated, skipped, profiles: [...touched] };
 }
 
 let cfnStatus = '';
@@ -1332,11 +1395,11 @@ async function pollCFNWatcher() {
   try {
     const res = await fetch('http://127.0.0.1:8787/sync', { cache: 'no-store' });
     if (!res.ok) throw new Error('http ' + res.status);
-    const { added, skipped, profiles } = mergeCFN(await res.json());
-    cfnStatus = added
-      ? `synced ${added} new match(es) into ${profiles.join(', ')} at ${new Date().toLocaleTimeString()}`
+    const { added, updated, skipped, profiles } = mergeCFN(await res.json());
+    cfnStatus = (added || updated)
+      ? `synced ${added} new / ${updated} refreshed into ${profiles.join(', ')} at ${new Date().toLocaleTimeString()}`
       : `up to date (${skipped} known) at ${new Date().toLocaleTimeString()}`;
-    if (added) renderAll();
+    if (added || updated) renderAll();
     else if (activeTab === 'data') renderData();
   } catch (e) {
     cfnStatus = 'watcher not reachable — is "npm start" running in cfn-watcher/?';
@@ -1421,8 +1484,8 @@ function renderData() {
       const f = e.target.files[0];
       if (!f) return;
       f.text().then(t => {
-        const { added, skipped, profiles } = mergeCFN(JSON.parse(t));
-        cfnStatus = `imported ${added} new match(es)${profiles.length ? ' into ' + profiles.join(', ') : ''}, ${skipped} already known`;
+        const { added, updated, skipped, profiles } = mergeCFN(JSON.parse(t));
+        cfnStatus = `imported ${added} new, refreshed ${updated}${profiles.length ? ' in ' + profiles.join(', ') : ''}, ${skipped} unchanged`;
         renderAll(); switchTab('data');
       }).catch(() => { cfnMsg.textContent = 'That does not look like a cfn-sync.json file — nothing was changed.'; });
     } });
