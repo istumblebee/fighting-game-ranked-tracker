@@ -6,6 +6,19 @@
 <title>SF6 Ranked Lab</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🥊</text></svg>">
 <link rel="stylesheet" href="style.css">
+<!-- PWA: installable, works offline. These files exist only on the hosted/local
+     copy, not the single-file artifact bundle (its builder skips the <head>). -->
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#1a1a19">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="SF6 Ranked">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<script>
+  if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+    addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+  }
+</script>
 </head>
 <body>
 

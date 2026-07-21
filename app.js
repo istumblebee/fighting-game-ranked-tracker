@@ -144,7 +144,42 @@ function setActive(name) {
   saveDB();
 }
 // keys starting with "_" are derived at render time (e.g. the circular _set link) — never persist them
-function saveDB() { localStorage.setItem(LS_KEY, JSON.stringify(db, (k, v) => k.startsWith('_') ? undefined : v)); }
+const dbJSON = () => JSON.stringify(db, (k, v) => k.startsWith('_') ? undefined : v);
+function saveDB() {
+  const json = dbJSON();
+  localStorage.setItem(LS_KEY, json);
+  rollBackup(json);
+}
+
+/* ---------- automatic rolling backups (localStorage safety net) ----------
+   A ring of recent snapshots so a mistaken wipe/import is always recoverable
+   even without a manual export. New snapshot only when enough changed, to keep
+   the ring small: first save of a day, or 10+ matches since the last one. */
+const BK_KEY = 'sf6lab:backups';
+const BK_MAX = 6;
+function loadBackups() { try { return JSON.parse(localStorage.getItem(BK_KEY)) || []; } catch (e) { return []; } }
+function matchTotal(d) { try { return Object.values(d.profiles).reduce((a, p) => a + p.matches.length, 0); } catch (e) { return 0; } }
+function rollBackup(json) {
+  try {
+    const total = matchTotal(db);
+    if (total === 0) return; // nothing to protect yet
+    const ring = loadBackups();
+    const last = ring[ring.length - 1];
+    const dayKey = new Date().toISOString().slice(0, 10);
+    // Never snapshot a state that shrank — a wipe/clear/import must not push the
+    // last good state out of the ring or become the "newest" restore point.
+    // (Immediate undo of destructive actions is handled separately by undoState.)
+    if (last && total < last.total) return;
+    const fresh = !last || last.day !== dayKey || total - last.total >= 10;
+    if (!fresh) return;
+    ring.push({ ts: Date.now(), day: dayKey, total, json });
+    while (ring.length > BK_MAX) ring.shift();
+    try { localStorage.setItem(BK_KEY, JSON.stringify(ring)); }
+    catch (e) { // storage full — drop oldest snapshots and retry once
+      while (ring.length > 2) { ring.shift(); try { localStorage.setItem(BK_KEY, JSON.stringify(ring)); return; } catch (e2) { /* keep trimming */ } }
+    }
+  } catch (e) { /* backups are best-effort; never block a save */ }
+}
 
 function parseSeed() {
   const rows = str => str.trim().split('\n').map(l => l.split('|'));
@@ -186,17 +221,96 @@ function computeSets(ms) {
   const sets = [];
   let cur = null;
   for (const m of ms) {
-    const cont = cur && !cur.closed && cur.char === m.oppChar && cur.games.length < 3 &&
-      (m.oppLP == null || cur.lastOppLP == null || Math.abs(m.oppLP - cur.lastOppLP) <= 200);
-    if (!cont) { cur = { char: m.oppChar, games: [], wins: 0, losses: 0, closed: false, lastOppLP: null }; sets.push(cur); }
+    let cont = cur && !cur.closed && cur.char === m.oppChar && cur.games.length < 3;
+    if (cont && m.oppLP != null && cur.lastOppVal != null) {
+      // same opponent's rating barely moves between games; MR steps are smaller than LP
+      const tol = trackOf(m) === 'mr' ? 80 : 200;
+      if (Math.abs(m.oppLP - cur.lastOppVal) > tol) cont = false;
+    }
+    // CFN timestamps: games within a set are back-to-back, so a long gap means a
+    // fresh encounter (common when you face the same character again later)
+    if (cont && cur.lastPlayedAt != null && m.playedAt != null && m.playedAt - cur.lastPlayedAt > 600) cont = false;
+    if (!cont) { cur = { char: m.oppChar, games: [], wins: 0, losses: 0, closed: false, lastOppVal: null, lastPlayedAt: null }; sets.push(cur); }
     cur.games.push(m);
     if (m.result === 'W') cur.wins++; else cur.losses++;
-    if (m.oppLP != null) cur.lastOppLP = m.oppLP;
+    if (m.oppLP != null) cur.lastOppVal = m.oppLP;
+    if (m.playedAt != null) cur.lastPlayedAt = m.playedAt;
     if (cur.wins === 2 || cur.losses === 2) cur.closed = true;
     m._set = cur;
     m._setGame = cur.games.length;
   }
   return sets;
+}
+
+/* ---------- set adaptation & tilt analytics (CFN data makes these free) ---------- */
+function setAdaptation(sets) {
+  let g1w = 0, g1n = 0, laterW = 0, laterN = 0;
+  let wonG1 = 0, closedOut = 0, lostG1 = 0, cameBack = 0;
+  for (const set of sets) {
+    if (!set.games.length) continue;
+    const g1 = set.games[0];
+    g1n++; if (g1.result === 'W') g1w++;
+    for (let i = 1; i < set.games.length; i++) { laterN++; if (set.games[i].result === 'W') laterW++; }
+    if (set.closed) { // only decided sets tell us who took the set
+      const setWon = set.wins > set.losses;
+      if (g1.result === 'W') { wonG1++; if (setWon) closedOut++; }
+      else { lostG1++; if (setWon) cameBack++; }
+    }
+  }
+  const rate = (w, n) => ({ w, n, wr: n ? 100 * w / n : 0 });
+  return {
+    g1: rate(g1w, g1n), later: rate(laterW, laterN),
+    close: rate(closedOut, wonG1), comeback: rate(cameBack, lostG1),
+  };
+}
+
+// Split ranked matches into per-session ordered lists (a session = one date).
+function sessionSequences(ms) {
+  const map = new Map();
+  for (const m of ms) if (!m.placement) { if (!map.has(m.date)) map.set(m.date, []); map.get(m.date).push(m); }
+  return [...map.values()];
+}
+
+function tiltByPosition(sessions) {
+  const defs = [['Games 1–5', 1, 5], ['Games 6–10', 6, 10], ['Games 11–20', 11, 20], ['Games 21+', 21, Infinity]];
+  const buckets = defs.map(([label, lo, hi]) => ({ label, lo, hi, w: 0, n: 0 }));
+  for (const sess of sessions) sess.forEach((m, i) => {
+    const b = buckets.find(x => i + 1 >= x.lo && i + 1 <= x.hi);
+    b.n++; if (m.result === 'W') b.w++;
+  });
+  return buckets.filter(b => b.n).map(b => ({ label: b.label, value: 100 * b.w / b.n, n: b.n, detail: `${b.w}–${b.n - b.w}` }));
+}
+
+function tiltAfterLosses(sessions) {
+  const labels = ['Fresh / after a win', 'After 1 loss', 'After 2 losses', 'After 3+ losses'];
+  const b = labels.map(label => ({ label, w: 0, n: 0 }));
+  for (const sess of sessions) {
+    let streak = 0;
+    for (const m of sess) {
+      const k = Math.min(streak, 3);
+      b[k].n++; if (m.result === 'W') b[k].w++;
+      streak = m.result === 'L' ? streak + 1 : 0;
+    }
+  }
+  return b.filter(x => x.n).map(x => ({ label: x.label, value: 100 * x.w / x.n, n: x.n, detail: `${x.w}–${x.n - x.w}` }));
+}
+
+// How often you peak mid-session then give rating back before logging off.
+function giveBackStats(sessions) {
+  let counted = 0, gaveBack = 0, gaveBackN = 0, worst = null;
+  for (const sess of sessions) {
+    if (sess.length < 3) continue;
+    const track = trackOf(sess[sess.length - 1]);
+    const vals = sess.filter(m => trackOf(m) === track).map(lpAfter).filter(v => v != null);
+    if (vals.length < 3) continue;
+    counted++;
+    const peak = Math.max(...vals), end = vals[vals.length - 1], gb = peak - end;
+    if (gb > 0) {
+      gaveBack += gb; gaveBackN++;
+      if (!worst || gb > worst.gb) worst = { gb, date: sess[0].date, peak, end, track };
+    }
+  }
+  return { counted, gaveBackN, avg: gaveBackN ? Math.round(gaveBack / gaveBackN) : 0, worst };
 }
 
 function record(ms) {
@@ -919,6 +1033,63 @@ function renderDash() {
       table: roundTable(lostRounds),
     })));
 
+  // set adaptation — do you adjust inside a first-to-2?
+  const allSets = [...new Set(ms.map(m => m._set))];
+  const adapt = setAdaptation(allSets);
+  if (adapt.g1.n >= 6) {
+    const tile = (label, r, sub) => h('div', { class: 'kpi' },
+      h('div', { class: 'k-label' }, label),
+      h('div', { class: 'k-value' }, r.n ? pct(r.wr) : '—'),
+      h('div', { class: 'k-delta' }, r.n ? `${r.w}–${r.n - r.w} · ${sub}` : 'not enough sets yet'));
+    const delta = adapt.later.wr - adapt.g1.wr;
+    const insight = Math.abs(delta) < 4
+      ? 'Your game-1 and later-game winrates are close — you neither snowball nor adjust much within a set.'
+      : delta > 0
+        ? `You win ${Math.round(delta)} pts more in games 2–3 than in game 1 — you adapt as a set goes on.`
+        : `You win ${Math.round(-delta)} pts less after game 1 — opponents are adjusting to you faster than you adjust to them.`;
+    pane.append(h('div', { class: 'card' },
+      h('h3', {}, 'Sets — do you adapt?'),
+      h('p', { class: 'sub' }, insight),
+      h('div', { class: 'kpis' },
+        tile('Game 1 winrate', adapt.g1, 'the opener'),
+        tile('Games 2–3 winrate', adapt.later, 'after adjusting'),
+        tile('Close out a 1–0 lead', adapt.close, 'won game 1 → won set'),
+        tile('Reverse a 0–1 hole', adapt.comeback, 'lost game 1 → won set'))));
+  }
+
+  // tilt & fatigue — session flow
+  const sessSeqs = sessionSequences(ms);
+  const byPos = tiltByPosition(sessSeqs), afterL = tiltAfterLosses(sessSeqs);
+  const gb = giveBackStats(sessSeqs);
+  if (ms.filter(m => !m.placement).length >= 12) {
+    const unit = st ? (st.track === 'mr' ? 'MR' : 'LP') : 'LP';
+    const gbLine = gb.gaveBackN
+      ? `You peaked then gave rating back in ${gb.gaveBackN} of ${gb.counted} multi-game sessions — an average of ${fmt(gb.avg)} ${unit} handed back after your high point${gb.worst ? ` (worst: ${fmt(gb.worst.gb)} ${gb.worst.track === 'mr' ? 'MR' : 'LP'} on ${gb.worst.date})` : ''}. Knowing your stop point is free rating.`
+      : 'You tend to log off at or near your session high — good discipline.';
+    pane.append(h('div', { class: 'card' },
+      h('h3', {}, 'Session flow — tilt & fatigue'),
+      h('p', { class: 'sub' }, gbLine),
+      h('div', { class: 'card-grid' },
+        chartCard({
+          title: 'Winrate by game # in a session',
+          sub: 'Does your play fall off deep into a session?',
+          draw: host => drawBars(host, byPos, { isPct: true, labelW: 110 }),
+          table: () => buildTable(
+            [{ key: 'label', label: 'When' }, { key: 'n', label: 'Games', num: true },
+             { key: 'detail', label: 'Record', num: true }, { key: 'wr', label: 'Winrate', num: true }],
+            byPos.map(b => ({ label: b.label, n: b.n, detail: b.detail, wr: pct(b.value) }))),
+        }),
+        chartCard({
+          title: 'Winrate after consecutive losses',
+          sub: 'Does a loss snowball into the next match?',
+          draw: host => drawBars(host, afterL, { isPct: true, labelW: 130 }),
+          table: () => buildTable(
+            [{ key: 'label', label: 'State' }, { key: 'n', label: 'Games', num: true },
+             { key: 'detail', label: 'Record', num: true }, { key: 'wr', label: 'Winrate', num: true }],
+            afterL.map(b => ({ label: b.label, n: b.n, detail: b.detail, wr: pct(b.value) }))),
+        }))));
+  }
+
   // sessions table
   const sess = sessionsOf(all).reverse();
   pane.append(h('div', { class: 'card' },
@@ -1402,7 +1573,7 @@ async function pollCFNWatcher() {
     if (added || updated) renderAll();
     else if (activeTab === 'data') renderData();
   } catch (e) {
-    cfnStatus = 'watcher not reachable — is "npm start" running in cfn-watcher/?';
+    cfnStatus = 'No watcher found. Double-click start-watcher in the cfn-watcher folder and sign into Buckler, then try Sync again.';
     if (activeTab === 'data') renderData();
   }
 }
@@ -1476,8 +1647,13 @@ function renderData() {
 
   // ---- CFN auto-sync ----
   const cfnMsg = h('span', { class: 'hint' }, cfnStatus);
-  const autoChip = chipGroup(['Auto-sync from local watcher'],
-    db.cfnAuto ? 'Auto-sync from local watcher' : null,
+  const syncNowBtn = h('button', { class: 'btn primary', onclick: async () => {
+    cfnMsg.textContent = 'syncing…'; syncNowBtn.disabled = true;
+    await pollCFNWatcher();
+    syncNowBtn.disabled = false; renderData();
+  } }, 'Sync from CFN now');
+  const autoChip = chipGroup(['Keep syncing automatically'],
+    db.cfnAuto ? 'Keep syncing automatically' : null,
     v => { setCFNAuto(!!v); renderData(); }, { small: true });
   const cfnImport = (() => {
     const inp = h('input', { type: 'file', accept: '.json', style: 'display:none', onchange: e => {
@@ -1489,12 +1665,16 @@ function renderData() {
         renderAll(); switchTab('data');
       }).catch(() => { cfnMsg.textContent = 'That does not look like a cfn-sync.json file — nothing was changed.'; });
     } });
-    return h('label', {}, inp, h('span', { class: 'btn' }, 'Import cfn-sync.json'));
+    return h('label', {}, inp, h('span', { class: 'btn' }, 'Choose cfn-sync.json'));
   })();
   pane.append(h('div', { class: 'card' },
     h('h3', {}, 'CFN auto-sync'),
-    h('p', { class: 'sub' }, 'Run the companion watcher on your gaming PC (see cfn-watcher/ in the repo) and matches log themselves: result, LP/MR, opponent, rounds — routed to the right character automatically. Defense/hit labs and notes stay yours.'),
-    h('div', { class: 'btn-row' }, autoChip, cfnImport, cfnMsg)));
+    h('p', { class: 'sub' }, 'Start the watcher on your PC (double-click start-watcher in the cfn-watcher folder — no command line needed), then just hit Sync. Matches log themselves: result, LP/MR, opponent, rounds — routed to the right character. Defense/hit labs and notes stay yours.'),
+    h('div', { class: 'btn-row' }, syncNowBtn, autoChip),
+    h('div', { class: 'btn-row', style: 'margin-top:8px' }, cfnMsg),
+    h('details', { style: 'margin-top:10px' },
+      h('summary', { class: 'hint', style: 'cursor:pointer' }, 'Watcher not running, or on another device? Import the file manually'),
+      h('div', { class: 'btn-row', style: 'margin-top:8px' }, cfnImport))));
 
   // ---- backup / seed ----
   const gief = db.profiles.Zangief;
@@ -1503,13 +1683,20 @@ function renderData() {
         { confirmText: 'Re-adds 164 matches to Zangief — click again', danger: false })
     : h('button', { class: 'btn primary', onclick: loadSeedIntoActive }, 'Load spreadsheet history (Zangief)');
 
+  const grandTotal = matchTotal(db);
+  const sinceExport = grandTotal - (db.lastExport ? db.lastExport.total : 0);
+  const nudge = sinceExport >= 25
+    ? h('p', { class: 'hint warn' }, `${sinceExport} matches logged since your last downloaded backup — export one to keep a copy outside this browser.`)
+    : db.lastExport ? h('p', { class: 'hint' }, `Last downloaded backup: ${new Date(db.lastExport.ts).toLocaleDateString()}.`) : null;
   pane.append(h('div', { class: 'card' },
     h('h3', {}, `Your data — ${db.active}`),
-    h('p', { class: 'sub' }, `${P.matches.length} matches · ${P.defense.length} defense reps · ${P.hits.length} hits on ${db.active}. Everything is stored in this browser (localStorage) — export a backup if you care about it. Backups include every character.`),
+    h('p', { class: 'sub' }, `${P.matches.length} matches · ${P.defense.length} defense reps · ${P.hits.length} hits on ${db.active}. Everything is stored in this browser (localStorage), with automatic local snapshots below — but for a copy that survives a cleared browser, download a backup. It includes every character.`),
+    nudge,
     h('div', { class: 'btn-row' },
       seedBtn,
-      h('button', { class: 'btn', onclick: () => {
+      h('button', { class: 'btn primary', onclick: () => {
         download('sf6lab-backup.json', dbSnapshot(), 'application/json');
+        db.lastExport = { ts: Date.now(), total: matchTotal(db) }; saveDB(); renderData();
       } }, 'Export backup (JSON)'),
       (() => {
         const inp = h('input', { type: 'file', accept: '.json', style: 'display:none', onchange: e => {
@@ -1534,6 +1721,24 @@ function renderData() {
         undoState = null;
         setActive(db.active); applyTheme(); renderAll();
       } }, `Undo ${undoState.label}`) : null)));
+
+  // ---- automatic local snapshots ----
+  const ring = loadBackups().slice().reverse();
+  pane.append(h('div', { class: 'card' },
+    h('h3', {}, 'Safety net — automatic snapshots'),
+    h('p', { class: 'sub' }, 'This browser keeps the last few states of all your data automatically, so an accidental wipe or a bad import is recoverable. These live in this browser only — a downloaded backup is still your off-device copy.'),
+    ring.length
+      ? h('div', { class: 'recent-list' }, ring.map(bk => h('div', { class: 'recent-item' },
+          h('span', { class: 'who' }, `${new Date(bk.ts).toLocaleString()}`),
+          h('span', { class: 'hint' }, `${bk.total} matches`),
+          armedBtn('Restore this', () => {
+            undoState = { json: dbSnapshot(), label: 'the restore' };
+            const theme = db.theme;
+            db = migrateDB(JSON.parse(bk.json));
+            if (db.theme == null) db.theme = theme;
+            setActive(db.active); applyTheme(); renderAll();
+          }, { confirmText: 'Replace current data — click again', danger: false }))))
+      : h('p', { class: 'hint' }, 'No snapshots yet — they start accumulating as you log matches.')));
 
   pane.append(h('div', { class: 'card' },
     h('h3', {}, 'Export CSV (spreadsheet-compatible)'),

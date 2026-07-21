@@ -4,41 +4,45 @@ Automatically pulls **your own** ranked match history from Capcom's Buckler's
 Boot Camp while you play, so SF6 Ranked Lab fills itself in — no more typing LP
 and opponents between games.
 
-## One-time setup (on the PC you play from)
+## No command line needed
+
+**Just double-click `start-watcher.bat` (Windows) or `start-watcher.command` (Mac).**
+The first run installs everything automatically (a couple of minutes); after that
+it launches straight into the watcher. On macOS the very first time, right-click →
+**Open** to clear the security prompt. Tip: make a desktop shortcut to that file so
+it's one click before each session.
+
+Then in the tracker's **Data tab**, hit **Sync from CFN now** (or flip on
+"Keep syncing automatically"). No files, no terminal.
+
+## What happens
+
+- A Chrome window opens on Buckler's Boot Camp. **First run only:** sign in
+  with your Capcom ID there. The session is stored in `~/.sf6lab-cfn`, so later
+  runs skip straight past login (you'll re-auth occasionally when it expires).
+- Leave the window open while you play. Every minute it checks your ranked
+  battle log and writes new matches to `cfn-sync.json` — result, characters,
+  LP/MR, opponent LP/MR, per-round wins/losses with finish types, control type.
+- The tracker pulls that straight from the watcher when you hit **Sync from CFN
+  now** or leave auto-sync on; matches route to the right character profile and
+  de-duplicate by CFN replay id.
+
+## Manual setup (if you prefer the command line)
 
 ```bash
 cd cfn-watcher
 npm install
 npx playwright install chromium
-```
-
-## Every session
-
-```bash
 npm start        # = node watch.js --serve
 ```
 
-- A Chrome window opens on Buckler's Boot Camp. **First run only:** sign in
-  with your Capcom ID there. The session is stored in `~/.sf6lab-cfn`, so later
-  runs skip straight past login (you'll re-auth occasionally when it expires).
-- Leave it running while you play. Every minute it checks your ranked battle
-  log and appends new matches to `cfn-sync.json` — result, characters, LP/MR,
-  opponent LP/MR, per-round wins/losses with finish types, opponent control type.
-- In the tracker's **Data tab**, either turn on **Auto-sync from local watcher**
-  (the page merges new matches every 30 seconds while open) or use
-  **Import cfn-sync.json** manually after a session. Matches are routed to the
-  right character profile automatically and de-duplicated by CFN replay id.
+## The round-finish codes (already confirmed)
 
-## First-run verification (please do this once)
-
-Capcom doesn't document the battle-log format, so two mappings are best-effort
-until checked against real data:
-
-1. **Round finish codes** (`CODE_FINISH` at the top of `watch.js`): after your
-   first synced session, compare a few matches against what the game showed
-   (V / P / OD / SA / CA). If a code is mismatched, fix the one-line table.
-2. If parsing fails outright, the watcher writes the raw data to
-   `cfn-raw-sample.json` — send that file back to have the field mapping fixed.
+Battle-log finish codes are mapped and verified: 1 = V (KO), 2 = P (Perfect),
+5 = CA, 6 = SA, 7 = T (time out), 8 = OD. Chip (C) hasn't appeared in real data
+yet — if a round finish ever looks wrong, the raw codes are kept with every
+match, so it's a one-line fix. If parsing fails outright the watcher writes
+`cfn-raw-sample.json` for diagnosis.
 
 ## Notes
 

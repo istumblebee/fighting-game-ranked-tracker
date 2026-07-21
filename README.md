@@ -33,6 +33,12 @@ migrates into a "Main" profile you can rename. Backups include every character.
   markers; a **matchup chart** (winrate vs 50% per opponent character — instantly
   shows e.g. the Cammy problem); winrate by opponent strength (are losses coming
   from stronger players or upsets?); per-session summary table.
+- **Set adaptation** — game-1 vs games-2/3 winrate, and how often you close out a
+  1–0 lead vs reverse a 0–1 hole. Measures whether you actually adjust inside a
+  first-to-2 (the most coachable ranked skill).
+- **Tilt & fatigue** — winrate by game-number within a session and after N
+  consecutive losses, plus how much rating you tend to give back after peaking
+  mid-session. Your stop point is free LP.
 - **Defense lab** — the sheet's second tab, now with outcome breakdowns:
   how each defensive option (block / parry / neutral jump / …) actually resolves,
   split by what the opponent did and corner vs midscreen.
@@ -58,18 +64,28 @@ migrates into a "Main" profile you can rename. Backups include every character.
 - Light/dark theme, phone-friendly layout for logging between games.
 - Every chart has a table view; hover any mark for details.
 
+**Install it like an app (PWA).** Hosted on GitHub Pages, it's installable —
+"Add to Home Screen" on a phone, or the install icon in a desktop browser — and
+works offline via a service worker caching the app shell.
+
+**Automatic safety net.** Beyond manual JSON export, the app keeps a rolling ring
+of local snapshots (Data → *Safety net*) so an accidental wipe or bad import is
+one click to undo. Destructive actions never overwrite the last good snapshot,
+and a nudge reminds you to download an off-device backup after enough new matches.
+
 ## CFN auto-sync (no more typing between games)
 
-`cfn-watcher/` is a companion tool you run on your gaming PC. It signs into
-Buckler's Boot Camp **with your own Capcom ID in a real browser window** (first
-run only; the session is kept locally) and polls your ranked battle log while
-you play. Every new match — result, LP/MR, opponent character and LP/MR,
-per-round wins with finish types, opponent control type — lands in
-`cfn-sync.json`. The tracker's Data tab then either auto-merges it every 30 s
-("Auto-sync from local watcher") or imports the file on demand. Matches route
-to the profile named after the character **you** played, and duplicates are
-dropped by CFN replay id. See `cfn-watcher/README.md` for setup and the
-one-time field-mapping verification.
+`cfn-watcher/` is a companion tool you run on your gaming PC — **double-click
+`start-watcher.bat` (Windows) or `start-watcher.command` (Mac), no command line.**
+It signs into Buckler's Boot Camp **with your own Capcom ID in a real browser
+window** (first run only; the session is kept locally) and reads your full ranked
+battle log (~100 matches). Every match — result, LP/MR, opponent character and
+LP/MR, per-round wins with confirmed finish types (KO/Perfect/CA/SA/time-out/OD),
+control type — is captured. In the tracker's Data tab, hit **Sync from CFN now**
+(or leave auto-sync on) and it merges: LP/MR deltas are chained from Buckler's
+pre-match ratings, matches route to the character **you** played, and duplicates
+drop by replay id. A browser page can't launch a program or read your login, so
+the watcher must run locally — but that's the only local step.
 
 ## Your data
 
@@ -84,8 +100,10 @@ one-time field-mapping verification.
 ## Files
 
 ```
-index.html   page shell
-style.css    theme (light/dark) and layout
-app.js       state, rank/set math, charts (hand-rolled SVG), all six tabs
-seed.js      the transcribed spreadsheet history
+index.html           page shell (+ PWA manifest/service-worker wiring)
+style.css            theme (light/dark) and layout
+app.js               state, rank/set math, analytics, charts, all six tabs
+seed.js              the transcribed spreadsheet history
+manifest.webmanifest / sw.js / icon-*.png   PWA install + offline
+cfn-watcher/         companion watcher + double-click launchers
 ```
