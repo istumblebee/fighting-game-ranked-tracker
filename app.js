@@ -264,30 +264,32 @@ function setAdaptation(sets) {
   };
 }
 
-// Round flow inside a single match (best-of-3 rounds): sweeps, comebacks, and
-// whether a round-1 lead gets closed out. Uses the +/- round signs.
+// Round flow inside a single match (best-of-3 rounds). Every decided match is
+// exactly one of six paths — enumerated in full — plus per-round winrates.
 function roundFlow(ms) {
-  let sweepW = 0, closeW = 0, closeL = 0, sweepL = 0; // 2–0, 2–1, 1–2, 0–2
+  const paths = { WW: 0, WLW: 0, LWW: 0, WLL: 0, LWL: 0, LL: 0 };
+  let total = 0, r1w = 0, r2w = 0, r3w = 0, went3 = 0, partial = 0;
   let wonR1 = 0, wonR1Win = 0, lostR1 = 0, lostR1Win = 0;
-  let went3 = 0, r3w = 0, total = 0;
   for (const m of ms) {
     if (m.placement) continue;
-    const seq = (m.rounds || []).map(roundSign).filter(Boolean); // 'W'/'L' per round
-    if (seq.length < 2 || seq.length > 3) continue;
+    if (!m.rounds || !m.rounds.length) continue;
+    const seq = m.rounds.map(roundSign).filter(Boolean); // 'W'/'L' per round
     const myR = seq.filter(x => x === 'W').length, opR = seq.filter(x => x === 'L').length;
-    if (myR !== 2 && opR !== 2) continue; // only decided matches
+    if (seq.length < 2 || seq.length > 3 || (myR !== 2 && opR !== 2)) { partial++; continue; } // incomplete round data
     total++;
+    const key = seq.join('');
+    if (paths[key] !== undefined) paths[key]++;
     const won = myR > opR;
-    if (won) (seq.length === 2 ? sweepW++ : closeW++); else (seq.length === 2 ? sweepL++ : closeL++);
-    if (seq[0] === 'W') { wonR1++; if (won) wonR1Win++; } else { lostR1++; if (won) lostR1Win++; }
+    if (seq[0] === 'W') { r1w++; wonR1++; if (won) wonR1Win++; } else { lostR1++; if (won) lostR1Win++; }
+    if (seq[1] === 'W') r2w++;
     if (seq.length === 3) { went3++; if (seq[2] === 'W') r3w++; }
   }
   const rate = (w, n) => ({ w, n, wr: n ? 100 * w / n : 0 });
   return {
-    total, shapes: { sweepW, closeW, closeL, sweepL },
-    sweep: rate(sweepW, total),
+    total, partial, paths,
+    sweep: rate(paths.WW, total),
     closeOut: rate(wonR1Win, wonR1), comeback: rate(lostR1Win, lostR1),
-    decider: rate(r3w, went3),
+    r1: rate(r1w, total), r2: rate(r2w, total), r3: rate(r3w, went3), decider: rate(r3w, went3),
   };
 }
 
@@ -1067,14 +1069,21 @@ function renderDash() {
       h('div', { class: 'k-label' }, label),
       h('div', { class: 'k-value' }, r.n ? pct(r.wr) : '—'),
       h('div', { class: 'k-delta' }, r.n ? `${r.w} of ${r.n} · ${sub}` : 'no data yet'));
-    const reversed = flow.closeOut.n - flow.closeOut.w;
-    const insight = `You 2–0 sweep ${pct(flow.sweep.wr)} of matches and close out a round-1 lead ${pct(flow.closeOut.wr)} of the time — the other ${reversed} time${reversed === 1 ? '' : 's'} you went up 1–0 and lost.`;
-    const shapes = flow.shapes;
-    const shapeRows = [
-      { label: '2–0 win', value: shapes.sweepW, n: shapes.sweepW, color: '--blue', detail: 'clean sweep' },
-      { label: '2–1 win', value: shapes.closeW, n: shapes.closeW, color: '--blue', detail: 'won the decider' },
-      { label: '1–2 loss', value: shapes.closeL, n: shapes.closeL, color: '--red', detail: 'lost the decider' },
-      { label: '0–2 loss', value: shapes.sweepL, n: shapes.sweepL, color: '--red', detail: 'got swept' },
+    const p = flow.paths;
+    const insight = `You win round 1 in ${pct(flow.r1.wr)} of matches. Take it and you close ${pct(flow.closeOut.wr)}; drop it and you recover only ${pct(flow.comeback.wr)}. You blew a 1–0 lead ${p.WLL} time${p.WLL === 1 ? '' : 's'} and were swept 0–2 ${p.LL} time${p.LL === 1 ? '' : 's'}.`;
+    // every decided best-of-3, most decisive win → most decisive loss
+    const pathRows = [
+      { label: '2–0', value: p.WW, n: p.WW, color: '--blue', detail: 'won both rounds' },
+      { label: '2–1 · won R1', value: p.WLW, n: p.WLW, color: '--blue', detail: 'W–L–W, held on' },
+      { label: '2–1 · lost R1', value: p.LWW, n: p.LWW, color: '--blue', detail: 'L–W–W, comeback' },
+      { label: '1–2 · won R1', value: p.WLL, n: p.WLL, color: '--red', detail: 'W–L–L, blew a 1–0 lead' },
+      { label: '1–2 · lost R1', value: p.LWL, n: p.LWL, color: '--red', detail: 'L–W–L, forced a 3rd, lost it' },
+      { label: '0–2', value: p.LL, n: p.LL, color: '--red', detail: 'lost both rounds' },
+    ];
+    const roundRows = [
+      { label: 'Round 1', value: flow.r1.wr, n: flow.r1.n, detail: `${flow.r1.w}–${flow.r1.n - flow.r1.w}`, color: flow.r1.wr >= 50 ? '--blue' : '--red' },
+      { label: 'Round 2', value: flow.r2.wr, n: flow.r2.n, detail: `${flow.r2.w}–${flow.r2.n - flow.r2.w}`, color: flow.r2.wr >= 50 ? '--blue' : '--red' },
+      { label: 'Round 3 (decider)', value: flow.r3.wr, n: flow.r3.n, detail: `${flow.r3.w}–${flow.r3.n - flow.r3.w}`, color: flow.r3.wr >= 50 ? '--blue' : '--red' },
     ];
     pane.append(h('div', { class: 'card' },
       h('h3', {}, 'Round flow — how your matches play out'),
@@ -1084,14 +1093,23 @@ function renderDash() {
         tile('Close out a 1–0 lead', flow.closeOut, 'won round 1 → won match'),
         tile('Come back from 0–1', flow.comeback, 'lost round 1 → won match'),
         tile('Deciding round winrate', flow.decider, 'game-3 rounds')),
-      h('div', { style: 'margin-top:14px' },
+      h('div', { class: 'card-grid', style: 'margin-top:14px' },
         chartCard({
-          title: 'Match score distribution',
-          sub: `${flow.total} matches with round data.`,
-          draw: host => drawBars(host, shapeRows, { labelW: 90 }),
+          title: 'Every way a match ends',
+          sub: `All 6 best-of-3 paths across ${flow.total} matches${flow.partial ? ` (${flow.partial} with partial round data excluded)` : ''}.`,
+          draw: host => drawBars(host, pathRows, { labelW: 108 }),
           table: () => buildTable(
-            [{ key: 'label', label: 'Score' }, { key: 'detail', label: '' }, { key: 'value', label: 'Matches', num: true }],
-            shapeRows.map(r => ({ label: r.label, detail: r.detail, value: r.value }))),
+            [{ key: 'label', label: 'Path' }, { key: 'detail', label: '' }, { key: 'value', label: 'Matches', num: true }],
+            pathRows.map(r => ({ label: r.label, detail: r.detail, value: r.value }))),
+        }),
+        chartCard({
+          title: 'Winrate by round',
+          sub: 'Which round position you actually win.',
+          draw: host => drawBars(host, roundRows, { isPct: true, labelW: 118 }),
+          table: () => buildTable(
+            [{ key: 'label', label: 'Round' }, { key: 'n', label: 'Matches', num: true },
+             { key: 'detail', label: 'Record', num: true }, { key: 'wr', label: 'Winrate', num: true }],
+            roundRows.map(r => ({ label: r.label, n: r.n, detail: r.detail, wr: pct(r.value) }))),
         }))));
   }
 
