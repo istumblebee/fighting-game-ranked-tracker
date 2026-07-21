@@ -264,6 +264,33 @@ function setAdaptation(sets) {
   };
 }
 
+// Round flow inside a single match (best-of-3 rounds): sweeps, comebacks, and
+// whether a round-1 lead gets closed out. Uses the +/- round signs.
+function roundFlow(ms) {
+  let sweepW = 0, closeW = 0, closeL = 0, sweepL = 0; // 2–0, 2–1, 1–2, 0–2
+  let wonR1 = 0, wonR1Win = 0, lostR1 = 0, lostR1Win = 0;
+  let went3 = 0, r3w = 0, total = 0;
+  for (const m of ms) {
+    if (m.placement) continue;
+    const seq = (m.rounds || []).map(roundSign).filter(Boolean); // 'W'/'L' per round
+    if (seq.length < 2 || seq.length > 3) continue;
+    const myR = seq.filter(x => x === 'W').length, opR = seq.filter(x => x === 'L').length;
+    if (myR !== 2 && opR !== 2) continue; // only decided matches
+    total++;
+    const won = myR > opR;
+    if (won) (seq.length === 2 ? sweepW++ : closeW++); else (seq.length === 2 ? sweepL++ : closeL++);
+    if (seq[0] === 'W') { wonR1++; if (won) wonR1Win++; } else { lostR1++; if (won) lostR1Win++; }
+    if (seq.length === 3) { went3++; if (seq[2] === 'W') r3w++; }
+  }
+  const rate = (w, n) => ({ w, n, wr: n ? 100 * w / n : 0 });
+  return {
+    total, shapes: { sweepW, closeW, closeL, sweepL },
+    sweep: rate(sweepW, total),
+    closeOut: rate(wonR1Win, wonR1), comeback: rate(lostR1Win, lostR1),
+    decider: rate(r3w, went3),
+  };
+}
+
 // Split ranked matches into per-session ordered lists (a session = one date).
 function sessionSequences(ms) {
   const map = new Map();
@@ -556,7 +583,7 @@ function drawBars(host, rows, { isPct = false, labelW = 150 } = {}) {
     const y = i * rowH + (rowH - 14) / 2;
     const name = r.label.length > 24 ? r.label.slice(0, 23) + '…' : r.label;
     svg.append(s('text', { x: labelW - 8, y: y + 11, 'text-anchor': 'end', 'font-size': 12.5, fill: cssVar('--ink-2') }, name));
-    svg.append(s('path', { d: barPath(X(0), X(r.value), y, 14), fill: blue }));
+    svg.append(s('path', { d: barPath(X(0), X(r.value), y, 14), fill: r.color ? cssVar(r.color) : blue }));
     const lbl = isPct ? `${pct(r.value)} (n=${r.n})` : fmt(r.value);
     svg.append(s('text', { x: X(r.value) + 6, y: y + 11, 'font-size': 12, fill: cssVar('--ink') }, lbl));
     const hit = s('rect', { x: 0, y: i * rowH, width: W, height: rowH, fill: 'transparent' });
@@ -1032,6 +1059,41 @@ function renderDash() {
       draw: host => drawBars(host, lostRounds, { labelW: 110 }),
       table: roundTable(lostRounds),
     })));
+
+  // round flow within a match — sweeps, closing a 1–0 lead, deciding rounds
+  const flow = roundFlow(ms);
+  if (flow.total >= 6) {
+    const tile = (label, r, sub) => h('div', { class: 'kpi' },
+      h('div', { class: 'k-label' }, label),
+      h('div', { class: 'k-value' }, r.n ? pct(r.wr) : '—'),
+      h('div', { class: 'k-delta' }, r.n ? `${r.w} of ${r.n} · ${sub}` : 'no data yet'));
+    const reversed = flow.closeOut.n - flow.closeOut.w;
+    const insight = `You 2–0 sweep ${pct(flow.sweep.wr)} of matches and close out a round-1 lead ${pct(flow.closeOut.wr)} of the time — the other ${reversed} time${reversed === 1 ? '' : 's'} you went up 1–0 and lost.`;
+    const shapes = flow.shapes;
+    const shapeRows = [
+      { label: '2–0 win', value: shapes.sweepW, n: shapes.sweepW, color: '--blue', detail: 'clean sweep' },
+      { label: '2–1 win', value: shapes.closeW, n: shapes.closeW, color: '--blue', detail: 'won the decider' },
+      { label: '1–2 loss', value: shapes.closeL, n: shapes.closeL, color: '--red', detail: 'lost the decider' },
+      { label: '0–2 loss', value: shapes.sweepL, n: shapes.sweepL, color: '--red', detail: 'got swept' },
+    ];
+    pane.append(h('div', { class: 'card' },
+      h('h3', {}, 'Round flow — how your matches play out'),
+      h('p', { class: 'sub' }, insight),
+      h('div', { class: 'kpis' },
+        tile('2–0 sweep rate', flow.sweep, 'of all matches'),
+        tile('Close out a 1–0 lead', flow.closeOut, 'won round 1 → won match'),
+        tile('Come back from 0–1', flow.comeback, 'lost round 1 → won match'),
+        tile('Deciding round winrate', flow.decider, 'game-3 rounds')),
+      h('div', { style: 'margin-top:14px' },
+        chartCard({
+          title: 'Match score distribution',
+          sub: `${flow.total} matches with round data.`,
+          draw: host => drawBars(host, shapeRows, { labelW: 90 }),
+          table: () => buildTable(
+            [{ key: 'label', label: 'Score' }, { key: 'detail', label: '' }, { key: 'value', label: 'Matches', num: true }],
+            shapeRows.map(r => ({ label: r.label, detail: r.detail, value: r.value }))),
+        }))));
+  }
 
   // set adaptation — do you adjust inside a first-to-2?
   const allSets = [...new Set(ms.map(m => m._set))];
