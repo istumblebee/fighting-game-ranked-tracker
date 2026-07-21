@@ -38,10 +38,11 @@ const POLL_MS = 60_000;
 const PORT = 8787;
 const BUCKLER = 'https://www.streetfighter.com/6/buckler';
 
-// Round-result code → finish label (V/P/OD/SA/CA/C). Codes observed in real
-// battle logs: 1, 2, 5, 6, 7, 8. Best-effort mapping — the app re-derives
-// finishes from the raw codes on import, so fixes there apply retroactively.
-const CODE_FINISH = { 1: 'V', 2: 'P', 5: 'CA', 6: 'SA', 7: 'C', 8: 'OD' };
+// Round-result code → finish label, confirmed against real battle logs:
+// 1 = V (KO), 2 = P (Perfect), 5 = CA, 6 = SA, 7 = T (time out), 8 = OD.
+// Chip (C) hasn't been observed yet; unknown codes fall back to V and the raw
+// values are preserved so the app can re-derive once identified.
+const CODE_FINISH = { 1: 'V', 2: 'P', 5: 'CA', 6: 'SA', 7: 'T', 8: 'OD' };
 
 // tolerate snake_case / camelCase across site updates
 const pick = (obj, ...names) => {

@@ -17,13 +17,13 @@ const ROSTER = ['A.K.I.', 'Akuma', 'Alex', 'Arjun', 'Blanka', 'Bosch', 'C. Viper
   'Mai', 'Manon', 'Marisa', 'Rashid', 'Ryu', 'Sagat', 'Terry', 'Tifa', 'Yasmine',
   'Zangief'];
 
-const ROUND_OPTS = ['V', 'P', 'OD', 'SA', 'CA', 'C'];
-const ROUND_HELP = 'Per round: who took it, and the finish shown on the vs screen. V = KO · P = Perfect · OD = Overdrive · SA = Super Art · CA = Critical Art · C = chip/time';
+const ROUND_OPTS = ['V', 'P', 'OD', 'SA', 'CA', 'C', 'T'];
+const ROUND_HELP = 'Per round: who took it, and the finish shown on the vs screen. V = KO · P = Perfect · OD = Overdrive · SA = Super Art · CA = Critical Art · C = chip (burnout) · T = time out';
 // Rounds are stored as "+V" (round you won) / "-SA" (round the opponent won);
 // a bare finish with no sign is legacy data where the winner wasn't recorded.
 const roundSign = r => r.startsWith('+') ? 'W' : r.startsWith('-') ? 'L' : null;
 const roundFinish = r => r.replace(/^[+-]/, '');
-const FINISH_NAME = { V: 'KO', P: 'Perfect', OD: 'Overdrive', SA: 'Super Art', CA: 'Critical Art', C: 'Chip / time' };
+const FINISH_NAME = { V: 'KO', P: 'Perfect', OD: 'Overdrive', SA: 'Super Art', CA: 'Critical Art', C: 'Chip (burnout)', T: 'Time out' };
 
 const DEF_ATTEMPTS = ['Block', 'Parry', 'Neutral Jump', 'Jump Out of Corner', 'Backdash',
   'Throw', 'Drive Impact', 'Drive Reversal', 'Super Art 3', 'A button', 'N/A'];
@@ -750,7 +750,7 @@ function renderLog() {
         h('div', { class: 'field' }, h('span', {}, 'Opponent character (your most-faced first)'), charChips, customInput),
         h('div', { class: 'chip-row' }, ncChip, modernChip),
         h('div', { class: 'field' },
-          h('span', { title: ROUND_HELP }, 'Rounds (optional) — who won each, and the finish (V · P · OD · SA · CA · C)'),
+          h('span', { title: ROUND_HELP }, 'Rounds (optional) — who won each, and the finish (V · P · OD · SA · CA · C · T)'),
           h('div', { class: 'form-grid' }, roundRows)),
         h('div', { class: 'field' }, h('span', {}, 'Notes'), noteInput),
         h('div', { class: 'btn-row' }, saveBtn, cancelEdit, rematchBtn, saveMsg))),
@@ -1294,7 +1294,7 @@ const normChar = s => CHAR_BY_KEY.get(charKey(s)) || String(s);
 // Round-result codes observed in real data: 0 = lost round; winners carry the
 // finish type. Best-effort mapping, re-derived from raw codes on every import
 // so a corrected table here fixes history retroactively.
-const CFN_FINISH = { 1: 'V', 2: 'P', 5: 'CA', 6: 'SA', 7: 'C', 8: 'OD' };
+const CFN_FINISH = { 1: 'V', 2: 'P', 5: 'CA', 6: 'SA', 7: 'T', 8: 'OD' }; // confirmed against real matches; chip's code not yet observed
 function cfnRounds(myRaw, opRaw) {
   const n = Math.max(myRaw ? myRaw.length : 0, opRaw ? opRaw.length : 0);
   const out = [];
